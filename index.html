@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>スーパープラットフォーマー</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="game-container">
+        <div class="ui-overlay">
+            <div class="score">スコア: <span id="score">0</span></div>
+            <div class="lives">残りライフ: <span id="lives">3</span></div>
+        </div>
+        <canvas id="gameCanvas"></canvas>
+        <div class="game-menu" id="gameMenu">
+            <h1>スーパープラットフォーマー</h1>
+            <p>操作方法:</p>
+            <ul>
+                <li>← → : 左右移動</li>
+                <li>スペース / ↑ : ジャンプ</li>
+                <li>Z : 攻撃</li>
+            </ul>
+            <button id="startButton">ゲーム開始</button>
+        </div>
+        <div class="game-over" id="gameOver" style="display: none;">
+            <h2 id="gameOverTitle">ゲームオーバー</h2>
+            <p>最終スコア: <span id="finalScore">0</span></p>
+            <button id="restartButton">もう一度プレイ</button>
+        </div>
+    </div>
+    <script src="game.js"></script>
+</body>
+</html>
+
