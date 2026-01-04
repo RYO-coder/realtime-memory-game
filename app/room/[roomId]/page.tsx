@@ -30,64 +30,75 @@ export default function RoomPage() {
 
     const roomRef = doc(db, 'rooms', roomId);
 
-    // ルームが存在しない場合は作成
-    getDoc(roomRef).then((docSnap) => {
-      if (!docSnap.exists()) {
-        const initialState: GameState = {
-          roomId,
-          players: [],
-          cards: [],
-          currentPlayerIndex: 0,
-          flippedCards: [],
-          gameStatus: 'waiting',
-          settings: {
-            imagesPerPlayer: 7,
-            maxPlayers: 4,
-          },
-        };
-        setDoc(roomRef, initialState);
+    // ルームの初期化とプレイヤー追加を順次実行
+    const initializeRoom = async () => {
+      try {
+        // ルームが存在しない場合は作成
+        const docSnap = await getDoc(roomRef);
+        if (!docSnap.exists()) {
+          const initialState: GameState = {
+            roomId,
+            players: [],
+            cards: [],
+            currentPlayerIndex: 0,
+            flippedCards: [],
+            gameStatus: 'waiting',
+            settings: {
+              imagesPerPlayer: 7,
+              maxPlayers: 4,
+            },
+          };
+          await setDoc(roomRef, initialState);
+        }
+
+        // プレイヤーを追加
+        const currentData = (await getDoc(roomRef)).data() as GameState;
+        if (currentData && !currentData.players.find(p => p.id === newPlayerId)) {
+          if (currentData.players.length < currentData.settings.maxPlayers) {
+            const newPlayer: Player = {
+              id: newPlayerId,
+              name: playerName,
+              score: 0,
+              images: [],
+            };
+            await updateDoc(roomRef, {
+              players: arrayUnion(newPlayer),
+            });
+          }
+        }
+      } catch (error) {
+        console.error('ルーム初期化エラー:', error);
       }
-    });
+    };
+
+    initializeRoom();
 
     // リアルタイムリスナー
     const unsubscribe = onSnapshot(roomRef, (docSnap) => {
       if (docSnap.exists()) {
-        setGameState(docSnap.data() as GameState);
+        const data = docSnap.data() as GameState;
+        setGameState(data);
       }
+    }, (error) => {
+      console.error('リアルタイムリスナーエラー:', error);
     });
-
-    // プレイヤーを追加
-    const addPlayer = async () => {
-      const currentData = (await getDoc(roomRef)).data() as GameState;
-      if (currentData && !currentData.players.find(p => p.id === newPlayerId)) {
-        if (currentData.players.length < currentData.settings.maxPlayers) {
-          const newPlayer: Player = {
-            id: newPlayerId,
-            name: playerName,
-            score: 0,
-            images: [],
-          };
-          await updateDoc(roomRef, {
-            players: arrayUnion(newPlayer),
-          });
-        }
-      }
-    };
-
-    addPlayer();
 
     return () => {
       unsubscribe();
       // プレイヤーを削除
-      if (newPlayerId) {
-        getDoc(roomRef).then((docSnap) => {
+      const removePlayer = async () => {
+        try {
+          const docSnap = await getDoc(roomRef);
           if (docSnap.exists()) {
             const currentData = docSnap.data() as GameState;
             const updatedPlayers = currentData.players.filter((p: Player) => p.id !== newPlayerId);
-            updateDoc(roomRef, { players: updatedPlayers });
+            await updateDoc(roomRef, { players: updatedPlayers });
           }
-        });
-      }
+        } catch (error) {
+          console.error('プレイヤー削除エラー:', error);
+        }
+      };
+      removePlayer();
     };
   }, [roomId, playerName]);
 
@@ -109,35 +120,79 @@ export default function RoomPage() {
   };
 
   const handleUpload = async () => {
-    if (!selectedFiles.length || !gameState) return;
+    if (!selectedFiles.length || !gameState || !playerId) {
+      alert('アップロードの準備ができていません。しばらく待ってから再度お試しください。');
+      return;
+    }
 
     setUploading(true);
     const roomRef = doc(db, 'rooms', roomId);
 
     try {
+      // ファイルサイズと形式をチェック
+      const maxSize = 5 * 1024 * 1024; // 5MB
+      const invalidFiles = selectedFiles.filter(file => {
+        return file.size > maxSize || !file.type.startsWith('image/');
+      });
+
+      if (invalidFiles.length > 0) {
+        alert('画像ファイルのみアップロードでき、ファイルサイズは5MB以下である必要があります。');
+        setUploading(false);
+        return;
+      }
+
       const uploadPromises = selectedFiles.map(async (file) => {
-        const imageId = uuidv4();
-        const imageRef = ref(storage, `rooms/${roomId}/${playerId}/${imageId}`);
-        await uploadBytes(imageRef, file);
-        return getDownloadURL(imageRef);
+        try {
+          const imageId = uuidv4();
+          const fileExtension = file.name.split('.').pop() || 'jpg';
+          const imageRef = ref(storage, `rooms/${roomId}/${playerId}/${imageId}.${fileExtension}`);
+          await uploadBytes(imageRef, file);
+          return getDownloadURL(imageRef);
+        } catch (error) {
+          console.error('個別ファイルアップロードエラー:', error);
+          throw error;
+        }
       });
 
       const urls = await Promise.all(uploadPromises);
-      const currentPlayer = gameState.players.find(p => p.id === playerId);
       
-      if (currentPlayer) {
-        const updatedImages = [...currentPlayer.images, ...urls];
-        const updatedPlayers = gameState.players.map(p =>
-          p.id === playerId ? { ...p, images: updatedImages } : p
-        );
-
-        await updateDoc(roomRef, { players: updatedPlayers });
-        setImages(updatedImages);
-        setSelectedFiles([]);
+      // 最新のゲーム状態を取得
+      const currentDoc = await getDoc(roomRef);
+      if (!currentDoc.exists()) {
+        throw new Error('ルームが見つかりません');
       }
-    } catch (error) {
+
+      const currentGameState = currentDoc.data() as GameState;
+      const currentPlayer = currentGameState.players.find(p => p.id === playerId);
+      
+      if (!currentPlayer) {
+        throw new Error('プレイヤーが見つかりません');
+      }
+
+      const updatedImages = [...currentPlayer.images, ...urls];
+      const updatedPlayers = currentGameState.players.map(p =>
+        p.id === playerId ? { ...p, images: updatedImages } : p
+      );
+
+      await updateDoc(roomRef, { players: updatedPlayers });
+      setSelectedFiles([]);
+      
+      // ファイル入力欄をリセット
+      const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+      if (fileInput) {
+        fileInput.value = '';
+      }
+    } catch (error: any) {
       console.error('アップロードエラー:', error);
-      alert('画像のアップロードに失敗しました');
+      let errorMessage = '画像のアップロードに失敗しました';
+      if (error.code === 'storage/unauthorized') {
+        errorMessage = 'アップロード権限がありません。Firebase Storageの設定を確認してください。';
+      } else if (error.code === 'storage/quota-exceeded') {
+        errorMessage = 'ストレージの容量が不足しています。';
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+      alert(errorMessage);
     } finally {
       setUploading(false);
     }
@@ -257,6 +312,15 @@ export default function RoomPage() {
   const isMyTurn = gameState.gameStatus === 'playing' &&
     gameState.players[gameState.currentPlayerIndex]?.id === playerId;
 
+  // プレイヤーがまだ追加されていない場合
+  if (!currentPlayer && playerId) {
+    return (
+      <div className={styles.container}>
+        <div className={styles.loading}>ルームに参加中...</div>
+      </div>
+    );
+  }
+
   return (
     <div className={styles.container}>
       <div className={styles.header}>
@@ -326,7 +390,7 @@ export default function RoomPage() {
                   accept="image/*"
                   multiple
                   onChange={handleFileSelect}
-                  disabled={uploading || currentPlayer.images.length >= gameState.settings.imagesPerPlayer}
+                  disabled={uploading || !playerId || currentPlayer.images.length >= gameState.settings.imagesPerPlayer}
                 />
                 {selectedFiles.length > 0 && (
                   <button
