@@ -121,7 +121,32 @@ export default function RoomPage() {
 
   const handleUpload = async () => {
     if (!selectedFiles.length || !gameState || !playerId) {
+      console.error('アップロード準備エラー:', { 
+        selectedFiles: selectedFiles.length, 
+        gameState: !!gameState, 
+        playerId 
+      });
       alert('アップロードの準備ができていません。しばらく待ってから再度お試しください。');
+      return;
+    }
+
+    // Storageの確認
+    if (!storage) {
+      console.error('Storageが初期化されていません');
+      alert('ストレージの初期化に失敗しました。ページをリロードしてください。');
+      return;
+    }
+
+    // Storageが正しく初期化されているか確認
+    try {
+      // テスト用の参照を作成して確認
+      const testRef = ref(storage, 'test');
+      if (!testRef) {
+        throw new Error('Storage参照の作成に失敗しました');
+      }
+    } catch (error: any) {
+      console.error('Storage検証エラー:', error);
+      alert(`ストレージの検証に失敗しました: ${error.message || '不明なエラー'}`);
       return;
     }
 
@@ -129,10 +154,24 @@ export default function RoomPage() {
     const roomRef = doc(db, 'rooms', roomId);
 
     try {
+      console.log('アップロード開始:', { 
+        files: selectedFiles.length, 
+        roomId, 
+        playerId 
+      });
+
       // ファイルサイズと形式をチェック
       const maxSize = 5 * 1024 * 1024; // 5MB
       const invalidFiles = selectedFiles.filter(file => {
-        return file.size > maxSize || !file.type.startsWith('image/');
+        const isValid = file.size <= maxSize && file.type.startsWith('image/');
+        if (!isValid) {
+          console.warn('無効なファイル:', {
+            name: file.name,
+            size: file.size,
+            type: file.type
+          });
+        }
+        return !isValid;
       });
 
       if (invalidFiles.length > 0) {
@@ -141,20 +180,80 @@ export default function RoomPage() {
         return;
       }
 
-      const uploadPromises = selectedFiles.map(async (file) => {
+      const uploadPromises = selectedFiles.map(async (file, index) => {
         try {
+          console.log(`ファイル ${index + 1}/${selectedFiles.length} をアップロード中:`, {
+            name: file.name,
+            size: file.size,
+            type: file.type
+          });
+          
           const imageId = uuidv4();
-          const fileExtension = file.name.split('.').pop() || 'jpg';
-          const imageRef = ref(storage, `rooms/${roomId}/${playerId}/${imageId}.${fileExtension}`);
-          await uploadBytes(imageRef, file);
-          return getDownloadURL(imageRef);
-        } catch (error) {
-          console.error('個別ファイルアップロードエラー:', error);
-          throw error;
+          // ファイル拡張子を安全に取得
+          const fileNameParts = file.name.split('.');
+          const fileExtension = fileNameParts.length > 1 
+            ? fileNameParts.pop()?.toLowerCase() || 'jpg'
+            : 'jpg';
+          
+          // 有効な拡張子かチェック
+          const validExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
+          const safeExtension = validExtensions.includes(fileExtension) ? fileExtension : 'jpg';
+          
+          const storagePath = `rooms/${roomId}/${playerId}/${imageId}.${safeExtension}`;
+          console.log('Storageパス:', storagePath);
+          
+          const imageRef = ref(storage, storagePath);
+          console.log('Storage参照作成完了:', imageRef);
+          
+          // メタデータを設定
+          const metadata = {
+            contentType: file.type || 'image/jpeg',
+            customMetadata: {
+              originalName: file.name,
+              uploadedBy: playerId,
+              roomId: roomId
+            }
+          };
+          
+          console.log('アップロード開始...');
+          await uploadBytes(imageRef, file, metadata);
+          console.log('アップロード完了:', file.name);
+          
+          const downloadURL = await getDownloadURL(imageRef);
+          console.log('ダウンロードURL取得完了:', downloadURL);
+          return downloadURL;
+        } catch (error: any) {
+          console.error('個別ファイルアップロードエラー:', {
+            fileName: file.name,
+            fileSize: file.size,
+            fileType: file.type,
+            error: error,
+            code: error.code,
+            message: error.message,
+            serverResponse: error.serverResponse,
+            stack: error.stack
+          });
+          
+          // エラーメッセージを詳細化
+          let errorMessage = 'アップロードに失敗しました';
+          if (error.code === 'storage/unauthorized') {
+            errorMessage = 'アップロード権限がありません。Firebase Storageのセキュリティルールを確認してください。';
+          } else if (error.code === 'storage/quota-exceeded') {
+            errorMessage = 'ストレージの容量が不足しています。';
+          } else if (error.code === 'storage/unauthenticated') {
+            errorMessage = '認証が必要です。';
+          } else if (error.code === 'storage/canceled') {
+            errorMessage = 'アップロードがキャンセルされました。';
+          } else if (error.message) {
+            errorMessage = error.message;
+          }
+          
+          throw new Error(`${file.name}: ${errorMessage}`);
         }
       });
 
       const urls = await Promise.all(uploadPromises);
+      console.log('すべてのファイルのアップロード完了:', urls);
       
       // 最新のゲーム状態を取得
       const currentDoc = await getDoc(roomRef);
@@ -174,7 +273,10 @@ export default function RoomPage() {
         p.id === playerId ? { ...p, images: updatedImages } : p
       );
 
+      console.log('プレイヤー情報を更新中...');
       await updateDoc(roomRef, { players: updatedPlayers });
+      console.log('プレイヤー情報更新完了');
+      
       setSelectedFiles([]);
       
       // ファイル入力欄をリセット
@@ -182,16 +284,43 @@ export default function RoomPage() {
       if (fileInput) {
         fileInput.value = '';
       }
+      
+      alert(`${selectedFiles.length}枚の画像をアップロードしました！`);
     } catch (error: any) {
-      console.error('アップロードエラー:', error);
+      console.error('アップロードエラー詳細:', {
+        error,
+        code: error.code,
+        message: error.message,
+        stack: error.stack,
+        name: error.name
+      });
+      
       let errorMessage = '画像のアップロードに失敗しました';
-      if (error.code === 'storage/unauthorized') {
-        errorMessage = 'アップロード権限がありません。Firebase Storageの設定を確認してください。';
-      } else if (error.code === 'storage/quota-exceeded') {
-        errorMessage = 'ストレージの容量が不足しています。';
+      
+      if (error.code) {
+        switch (error.code) {
+          case 'storage/unauthorized':
+            errorMessage = 'アップロード権限がありません。Firebase Storageのセキュリティルールを確認してください。';
+            break;
+          case 'storage/quota-exceeded':
+            errorMessage = 'ストレージの容量が不足しています。';
+            break;
+          case 'storage/unauthenticated':
+            errorMessage = '認証が必要です。ページをリロードしてください。';
+            break;
+          case 'storage/canceled':
+            errorMessage = 'アップロードがキャンセルされました。';
+            break;
+          case 'storage/unknown':
+            errorMessage = '不明なエラーが発生しました。Firebase Storageの設定を確認してください。';
+            break;
+          default:
+            errorMessage = `エラーコード: ${error.code}\nメッセージ: ${error.message || '不明なエラー'}`;
+        }
       } else if (error.message) {
         errorMessage = error.message;
       }
+      
       alert(errorMessage);
     } finally {
       setUploading(false);
