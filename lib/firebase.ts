@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
-import { getStorage } from 'firebase/storage';
+import { getStorage, FirebaseStorage } from 'firebase/storage';
 import { getAuth } from 'firebase/auth';
 
 // Firebase設定
@@ -30,7 +30,7 @@ if (!storageBucket || storageBucket === "your-storage-bucket") {
 const bucketName = storageBucket.replace(/^gs:\/\//, '').trim();
 
 // Storageを初期化
-let storage;
+let storage: FirebaseStorage;
 try {
   if (bucketName && bucketName !== '') {
     // バケット名が既にgs://で始まっている場合はそのまま、そうでない場合は追加
@@ -49,7 +49,8 @@ try {
     storage = getStorage(app);
   } catch (fallbackError) {
     console.error('Firebase Storage初期化（フォールバック）エラー:', fallbackError);
-    throw fallbackError;
+    // フォールバックとしても初期化に失敗した場合は、デフォルトのStorageを使用
+    storage = getStorage(app);
   }
 }
 
